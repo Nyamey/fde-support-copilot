@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+# Without this, `pytest` (as opposed to `python -m pytest`) doesn't add the
+# repo root to sys.path, so top-level imports like `from agent.state import
+# ...` fail with ModuleNotFoundError in CI even though they work locally
+# when the tests happen to be run via `python -m pytest`.
+pythonpath = ["."]
