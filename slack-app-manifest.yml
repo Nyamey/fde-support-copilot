@@ -1,0 +1,23 @@
+display_information:
+  name: FDE Support Copilot
+  description: Drafts support answers grounded in the team knowledge base — a human always approves before anything reaches a customer.
+  background_color: "#2B6E70"
+features:
+  bot_user:
+    display_name: support-copilot
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - channels:history
+      - channels:read
+settings:
+  event_subscriptions:
+    bot_events:
+      - message.channels
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

@@ -67,14 +67,14 @@ Same orchestration pattern as `ai-data-agent` (LangGraph, persistent checkpointe
 - **Slack integration:** `slack-bolt` (Socket Mode for local dev, switchable to HTTP + signed requests for the cloud deployment)
 - **Retrieval:** DuckDB (reusing the same engine as `ai-data-agent`) with a vector-search extension, or Chroma if DuckDB VSS proves too limited for embeddings at this scale
 - **LLM:** LiteLLM (same multi-provider fallback pattern as the other two projects — one provider down doesn't take the agent down)
-- **Deployment:** Docker, deployed to Render or Fly.io free tier
+- **Deployment:** Docker on Render's free-tier Web Service — HTTP mode (Flask + gunicorn, `SLACK_MODE=http`) rather than Socket Mode, since Render's free tier is Web Services only (Background Workers, the natural fit for Socket Mode, start at $7/mo)
 - **Tests:** pytest, targeting the same rigor bar as the other two projects (agent nodes tested in isolation, Slack event parsing tested without hitting the real API)
 
 ## Status
 
-Implemented and tested locally (no live Slack workspace connected yet — that's the next step, see below). Retrieval uses cosine similarity over DuckDB-stored embeddings computed through LiteLLM (`mistral/mistral-embed` by default), so no dedicated vector-database service or extra ML dependency is needed in the container. The draft node explicitly refuses to answer when nothing relevant was retrieved, rather than letting the LLM guess. The Slack review flow (Approve / Edit-then-resume / Reject) is fully wired through LangGraph's `interrupt_before` + `update_state`/`invoke(None, ...)` resume pattern.
+Implemented and tested (26 tests, 93% coverage on `agent/` and `knowledge_base/`). Retrieval uses cosine similarity over DuckDB-stored embeddings computed through LiteLLM (`mistral/mistral-embed` by default), so no dedicated vector-database service or extra ML dependency is needed in the container. The draft node explicitly refuses to answer when nothing relevant was retrieved, rather than letting the LLM guess. The Slack review flow (Approve / Edit-then-resume / Reject) is fully wired through LangGraph's `interrupt_before` + `update_state`/`invoke(None, ...)` resume pattern, over either Socket Mode (local dev) or HTTP mode (`SLACK_MODE=http`, for the Render deployment — Render's free tier is Web Services only, which need a public port; Background Workers, the natural fit for Socket Mode, start at $7/mo).
 
-**Not done yet:** connecting to a real Slack workspace and indexing a real knowledge base (both require secrets this repo doesn't ship with, on purpose — see `.env.example`), and the actual Docker/cloud deployment.
+A Slack app exists (manifest at `slack-app-manifest.yml`, imported via api.slack.com/apps), installed to a personal test workspace with Socket Mode + an app-level token generated. **Not done yet:** the Render Web Service itself, and pointing the Slack app's Event Subscriptions / Interactivity Request URL at it (needs the Render URL first, then Slack verifies it's reachable) — see `.env.example` for every secret the deployment needs, none of which are committed here on purpose.
 
 ## Project layout
 
@@ -99,11 +99,19 @@ fde-support-copilot/
 └── .env.example
 ```
 
-## Running locally (once the stubs are filled in)
+## Running locally
 
 ```bash
 cp .env.example .env        # fill in SLACK_BOT_TOKEN, SLACK_APP_TOKEN, an LLM API key
 pip install -r requirements.txt
 python knowledge_base/ingest.py --source ./docs   # index a starter knowledge base
-python slack_app.py                                # Socket Mode — no public URL needed for local dev
+python slack_app.py                                # SLACK_MODE=socket (default) — no public URL needed
 ```
+
+## Running in HTTP mode (what the Render deployment uses)
+
+```bash
+SLACK_MODE=http gunicorn -b 0.0.0.0:3000 slack_app:flask_app
+```
+
+Needs `SLACK_SIGNING_SECRET` set and a public URL (Render assigns one) pointed at from both **Event Subscriptions** and **Interactivity & Shortcuts** in the Slack app config, request URL `https://<your-service>.onrender.com/slack/events` for both.

@@ -8,6 +8,27 @@ fake event/body dicts and a mocked client — no network calls needed.
 import slack_app
 
 
+def test_health_endpoint_returns_ok():
+    """Render's health check (and any future URL-verification ping) just
+    needs a 200 here.
+    """
+    client = slack_app.flask_app.test_client()
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+
+
+def test_events_endpoint_delegates_to_the_bolt_request_handler(mocker):
+    handle = mocker.patch.object(slack_app._request_handler, "handle", return_value="handled")
+    client = slack_app.flask_app.test_client()
+
+    response = client.post("/slack/events", json={"type": "event_callback"})
+
+    assert response.status_code == 200
+    handle.assert_called_once()
+
+
 def test_message_outside_support_inbox_is_ignored(mocker):
     client = mocker.Mock()
     event = {"channel": "C_OTHER", "ts": "1.1", "text": "random chatter", "user": "U1"}

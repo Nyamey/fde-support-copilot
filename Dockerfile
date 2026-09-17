@@ -7,8 +7,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Socket Mode needs no exposed port; switch to HTTP mode (see slack_app.py)
-# and uncomment below if deploying behind a public webhook URL instead.
-# EXPOSE 8000
-
-CMD ["python", "slack_app.py"]
+# HTTP mode (SLACK_MODE=http): gunicorn serves the Flask app directly on
+# Render's assigned $PORT, never running slack_app.py's __main__ block.
+# Socket Mode (SLACK_MODE=socket, the local-dev default) needs no exposed
+# port at all — `docker run` without -p works fine for it.
+CMD ["sh", "-c", "if [ \"$SLACK_MODE\" = \"http\" ]; then gunicorn -b 0.0.0.0:${PORT:-3000} slack_app:flask_app; else python slack_app.py; fi"]

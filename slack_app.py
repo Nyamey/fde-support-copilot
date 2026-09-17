@@ -2,16 +2,26 @@
 runs them through the agent graph, and posts the human-approval message
 (with Approve / Edit / Reject buttons) to TEAM_REVIEW_CHANNEL_ID.
 
-Runs in Socket Mode for local dev (no public URL / no signing-secret setup
-needed) — switch to slack_bolt's Flask/FastAPI adapter with HTTP mode when
-deploying behind the Dockerfile's exposed port.
+Supports two transports, chosen by SLACK_MODE:
+
+- "socket" (default): Socket Mode, an outbound WebSocket connection — no
+  public URL or signing secret needed, the simplest path for local dev.
+- "http": Flask + slack_bolt's request handler, for platforms whose free
+  tier is a Web Service rather than a background worker (e.g. Render).
+  Needs SLACK_SIGNING_SECRET and a public Request URL configured in the
+  Slack app for Event Subscriptions and Interactivity, both pointed at
+  POST /slack/events. Served by gunicorn in the Dockerfile
+  (`gunicorn slack_app:flask_app`), which imports flask_app directly and
+  never runs the __main__ block below.
 """
 
 import json
 import os
 
 from dotenv import load_dotenv
+from flask import Flask, request
 from slack_bolt import App
+from slack_bolt.adapter.flask import SlackRequestHandler
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 from agent.graph import build_graph
@@ -21,6 +31,7 @@ load_dotenv()
 
 app = App(
     token=os.environ["SLACK_BOT_TOKEN"],
+    signing_secret=os.environ.get("SLACK_SIGNING_SECRET"),
     # Skips Slack's auth.test call at startup when unset/false — needed so
     # importing this module in tests (a fake token) doesn't hit the network.
     # Real deployments should leave SLACK_TOKEN_VERIFICATION unset (defaults on).
@@ -220,6 +231,28 @@ def handle_reject(ack, body, client):
     )
 
 
+# HTTP transport: a Flask app wrapping the same Bolt `app` and its handlers
+# above. Only exercised when SLACK_MODE=http; gunicorn imports this module
+# and serves `flask_app` directly, bypassing __main__ entirely.
+flask_app = Flask(__name__)
+_request_handler = SlackRequestHandler(app)
+
+
+@flask_app.route("/slack/events", methods=["POST"])
+def slack_events():
+    return _request_handler.handle(request)
+
+
+@flask_app.route("/", methods=["GET"])
+def health():
+    """Render (and Slack's own URL-verification ping, if ever used) just
+    need a 200 here — no health-check logic beyond "the process is up".
+    """
+    return "ok"
+
+
 if __name__ == "__main__":
-    handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
-    handler.start()
+    if os.getenv("SLACK_MODE", "socket") == "http":
+        flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 3000)))
+    else:
+        SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"]).start()
