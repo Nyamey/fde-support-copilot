@@ -1,0 +1,7 @@
+services:
+  agent:
+    build: .
+    env_file: .env
+    volumes:
+      - ./knowledge_base:/app/knowledge_base
+    restart: unless-stopped
