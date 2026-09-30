@@ -1,21 +1,30 @@
-How the human-approval flow works
+# How the approval flow works
+## The steps before a person sees the draft
+When someone posts a new message in the support inbox channel, the bot retrieves the most relevant passages from the knowledge base, drops the passages below the relevance threshold, drafts an answer from the passages that are left, and then stops. The draft is never posted in the support inbox at this point.
 
-When a question is posted in the support inbox channel, the agent runs through four steps before a human ever sees it: retrieve relevant passages from the knowledge base, draft an answer grounded in those passages, attach a confidence label, and stop. The draft is never posted to the customer-facing channel at this point.
+## What the review message shows
+The draft goes to a separate review channel. The review message shows the question, the draft answer, a confidence label, and the source files behind the draft with their similarity scores, followed by three buttons: Approve, Edit and Reject.
 
-Instead, the draft is posted to a separate, team-only review channel as a private message with three buttons: Approve, Edit, and Reject.
+## What the confidence label means
+The confidence label comes from the best similarity score among the passages used for the draft. It reads "high" from 0.5, "low" below that, and "none" when no passage passed the relevance threshold or when the model said the passages do not cover the question. It measures how close the passages are to the question. It is not the probability that the answer is correct, so the reviewer should still check the sources.
 
-What each button does
+## What Approve does
+Approve posts the draft exactly as written as a reply in the original thread of the support inbox. The bot then adds the question and the answer to the knowledge base, so that a similar question can find them later.
 
-Approve sends the draft exactly as written to the original customer-facing channel, and logs the exchange as-is.
+## What Edit does
+Edit opens a form where the reviewer can rewrite the draft. The rewritten answer is the one posted in the thread and added to the knowledge base, not the original draft.
 
-Edit opens a modal where a reviewer can rewrite the answer before it goes out. The edited version is what gets sent and logged, not the original draft.
+## What Reject does
+Reject ends the run. Nothing is posted in the support thread and nothing is added to the knowledge base. The reviewer can then answer by hand.
 
-Reject stops the process entirely. Nothing is sent to the customer, and the interaction is not logged as a resolved answer.
+## Why the pause is a real pause
+The pause is a LangGraph interrupt placed before the human_gate step. The run stops and its state is saved in a SQLite checkpoint, keyed by the Slack channel and the timestamp of the question. A button click resumes that same saved run with the reviewer's decision. The only path to posting an answer goes through this step.
 
-Why this matters technically
+## Who can approve
+Any member of the review channel can click Approve, Edit or Reject. The reviewer's Slack user ID is saved with the decision in the state of the run.
 
-This is implemented as a real LangGraph interrupt_before checkpoint, not a confirmation dialog bolted on afterward. The agent's execution genuinely pauses and persists its state; the Approve/Edit/Reject action resumes the same paused execution rather than starting a new one. This means a reviewer can take their time — minutes or hours — before responding, and the agent picks up exactly where it left off.
+## What happens after a decision
+The review message is replaced by the decision and the name of the reviewer, so the buttons disappear. A decision counts once: a second click, or a click by another reviewer on the same question, does not resume the run again and does not change the recorded decision. The person who clicked gets a private note saying the question is no longer waiting for review.
 
-Who can approve
-
-Any member of the team-review Slack channel can click Approve, Edit, or Reject. The reviewer's Slack user ID is recorded alongside the final answer for accountability.
+## Which messages count as questions
+Only new top-level messages in the support inbox channel start a run. Edited or deleted messages, replies inside a thread and the bot's own messages are ignored, so a follow-up question has to be posted as a new message.

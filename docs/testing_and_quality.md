@@ -1,11 +1,18 @@
-How this project is tested
+# Testing and quality
+## The automated tests
+The repository has 45 automated tests, run with pytest. They cover each agent step on its own, the relevance threshold, the backup models, the refusal marker, the ingestion and search of the knowledge base, the Slack handlers, the guard against duplicate Slack events, and two runs through the real LangGraph graph and its SQLite checkpoint: one approved, one rejected.
 
-The project has an automated pytest suite covering both the agent's decision logic and the Slack integration, targeting the same rigor bar as Karen's other portfolio projects: agent nodes are tested in isolation, and Slack event parsing is tested without ever hitting Slack's real API. As of the last recorded run, coverage sits at 93% across the agent and knowledge_base modules.
+## Do the tests call real services
+No. Slack, the language model and the embedding API are replaced by test doubles, so the tests never call a real service and need no API key. The evaluation set is the part that calls the real models.
 
-What happens when nothing relevant is in the knowledge base
+## Continuous integration
+GitHub Actions runs the whole test suite with Python 3.12 on every push and every pull request. An early CI run failed because plain pytest did not add the repository root to the import path; the fix was a pythonpath setting in pyproject.toml.
 
-The retrieve step is designed to fail safely: if no passage in the knowledge base is relevant enough to the question, the draft step does not invent an answer. It returns a response that says so explicitly, with a low-confidence label, so a human reviewer knows immediately that this one needs their own judgment rather than a rubber-stamp approval.
+## The evaluation set
+The evaluation folder holds 40 questions: 30 that the docs answer, each with the file that should be retrieved and a key fact the answer should contain, and 10 that the docs do not answer. A script rebuilds the knowledge base from the docs in a temporary database and runs every question through retrieval and drafting with the real models. It measures whether the right file is among the five passages retrieved and in first place, whether the off-topic questions are refused, whether the answers contain the key fact, and how long each step takes. The results are in evaluation/results and in the README.
 
-Continuous integration
+## How the relevance threshold was chosen
+The evaluation script records the best similarity score of every question. The threshold was chosen to refuse the off-topic questions while keeping the questions the docs answer, by comparing the two groups of scores. The script prints a table with the result of each candidate threshold.
 
-Every push and pull request runs the full test suite through GitHub Actions. A previous CI run failed the first time because the workflow invoked pytest directly rather than through python -m pytest, which does not add the project root to the import path by default; the fix was adding a pythonpath setting to pyproject.toml so the plain pytest entry point resolves top-level imports correctly regardless of how it's invoked.
+## What the evaluation does not show
+The questions were written with the docs in view, so they are probably easier than real ones. The knowledge base is small, with five files. The key-fact check looks for a word, not for a correct and complete answer, so the drafts are saved with the results to be read. Questions from a real team would be a better test.
