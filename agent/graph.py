@@ -19,7 +19,7 @@ from agent.nodes import retrieve, draft, human_gate, post, log
 
 
 def route_after_review(state: AgentState) -> str:
-    """A rejection skips post/log entirely and ends the run — nothing about a
+    """A rejection skips post/log entirely and ends the run: nothing about a
     rejected draft is ever sent to the customer or written to the knowledge
     base. Module-level (not a closure) so it has a direct unit test.
     """
@@ -43,7 +43,7 @@ def build_graph(checkpoint_path: str = "agent_checkpoints.sqlite"):
     graph.add_edge("log", END)
 
     # SqliteSaver.from_conn_string() is a context manager meant for a `with`
-    # block that closes on exit — wrong shape for a long-lived Slack app
+    # block that closes on exit, the wrong shape for a long-lived Slack app
     # (the connection needs to outlive this function). Building the
     # sqlite3.Connection directly and handing it to the plain constructor
     # avoids that mismatch; check_same_thread=False is safe here because

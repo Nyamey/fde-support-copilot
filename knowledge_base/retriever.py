@@ -42,7 +42,7 @@ def search(query: str, top_k: int = 5) -> list[RetrievedPassage]:
 
 
 def add_to_index(source: str, text: str) -> None:
-    """Append one new passage to the index — used by agent/nodes.py's log()
+    """Append one new passage to the index, used by agent/nodes.py's log()
     node so an approved answer becomes retrievable for the next similar
     question, without re-running the full ingest.py pass.
     """
