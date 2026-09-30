@@ -1,99 +1,119 @@
 # FDE Support Copilot
 
-**A human-approved AI agent that drafts support answers inside a real Slack workspace, grounded in the team's own knowledge base — and never sends anything to a customer without a human clicking "approve" first.**
+A Slack bot that drafts answers to support questions from a small knowledge base. A reviewer approves, edits or rejects every draft, and nothing is posted in the support thread before that decision.
 
-Live case study · [ai-data-agent](https://github.com/Nyamey/ai-data-agent) · [opc-rpa-ia-reporting](https://github.com/Nyamey/opc-rpa-ia-reporting)
+[![CI](https://github.com/Nyamey/fde-support-copilot/actions/workflows/ci.yml/badge.svg)](https://github.com/Nyamey/fde-support-copilot/actions/workflows/ci.yml)
 
----
+Portfolio project by Karen Ekiyabe. Related projects: [ai-data-agent](https://github.com/Nyamey/ai-data-agent) and [opc-rpa-ia-reporting](https://github.com/Nyamey/opc-rpa-ia-reporting).
 
-## The problem
+## What it does
 
-A small support or customer-success team gets repetitive questions in a Slack channel (or a shared inbox forwarded to Slack). Every answer requires someone to re-find the same three paragraphs in the docs, rephrase them, and reply — five minutes of low-value work, dozens of times a day. The team wants speed without losing control over what actually gets sent to a customer.
+1. **Listens** to one support inbox channel in Slack. Each new top-level message is a question.
+2. **Retrieves** the five passages of the knowledge base closest to the question, and drops those below a relevance threshold.
+3. **Drafts** an answer from the remaining passages only. If no passage is left, it skips the model and drafts a fixed refusal.
+4. **Pauses** and posts the draft in a separate review channel, with the question, a confidence label, the source files and three buttons: Approve, Edit and Reject.
+5. **Posts** the approved or edited answer as a reply in the original thread, and adds it to the knowledge base. A rejection ends the run and posts nothing.
 
-## What this agent does
+```mermaid
+flowchart LR
+    Q[Question in Slack] --> R[Retrieve passages]
+    R --> T{Passage above the threshold?}
+    T -->|No| F[Fixed refusal, no model call]
+    T -->|Yes| D[Draft from the passages]
+    F --> P{{Pause: state saved in SQLite}}
+    D --> P
+    P -->|Approve or Edit| S[Post in the original thread]
+    P -->|Reject| X[Stop, nothing posted]
+    S --> L[Add the answer to the knowledge base]
+```
 
-1. **Watches** a Slack channel for incoming questions (`app_mention` or a dedicated `#support-inbox` channel).
-2. **Retrieves** the most relevant passages from the team's knowledge base (docs, past resolved tickets, FAQ) using a local vector store.
-3. **Drafts** a grounded answer with the sources it used, and a confidence label.
-4. **Stops and asks a human** — the draft is posted as a private thread reply visible only to the support team, with Approve / Edit / Reject buttons. Nothing reaches the customer until a person clicks Approve.
-5. **Posts** the approved (or edited) answer publicly, and logs the exchange for future retrieval — the knowledge base gets better every time a human corrects the agent.
+The pause is a LangGraph `interrupt_before` on the `human_gate` step. The state of the run is saved in a SQLite checkpoint keyed by the Slack channel and the timestamp of the question, and a button click resumes that same run with `update_state` then `invoke(None)`. It is the pattern used in ai-data-agent, applied to a tool that other people can see.
 
-This is the same human-in-the-loop discipline already proven in [ai-data-agent](https://github.com/Nyamey/ai-data-agent) (`interrupt_before` checkpoint, replayable audit log), applied here to a live external system where a mistake is visible to a real customer instead of an internal spreadsheet — a deliberately higher-stakes environment.
+## Why I built it
 
-## Why this project exists
+To practise three things my first project did not cover: an integration with an external tool through the Slack API, a Docker deployment on a cloud host, and a human approval step on a system that other people can see. I use AI coding assistants to move faster, and I stay responsible for the design choices, the tests and the validation.
 
-Built to close three specific gaps between my first two portfolio projects and what Forward Deployed / Solutions Engineer hiring managers actually screen for in 2026:
+## Evaluation
 
-| Gap identified | How this project closes it |
+The [`evaluation/`](evaluation/) folder holds 40 questions: 30 that the docs answer, 3 of them in French, each with the file that should be retrieved and a key fact, plus 10 off-topic questions. `python -m evaluation.run_eval` rebuilds the knowledge base in a temporary database and runs every question through retrieval and drafting with the real models. Last run, on 30 September 2026, with `openrouter/openai/text-embedding-3-small` and `groq/openai/gpt-oss-120b`:
+
+| Measure | Result |
 |---|---|
-| No integration with a live third-party API/system | Real Slack API (OAuth, Events API or Socket Mode, Block Kit interactive buttons) — not a local-only demo |
-| No cloud/containerized deployment | Dockerized, deployed to a free-tier cloud host (Render/Fly.io), reachable 24/7 |
-| No "deployed for a real external user" story | Designed to run in an actual small Slack workspace (a friend's startup, an open-source community, a volunteer org) rather than a synthetic dataset |
-| No client-facing narrative in prior write-ups | This README, and the eventual demo video, are written as a case study — problem, decision, trade-off, outcome — not an engineering changelog |
+| Right file among the 5 passages retrieved | 30/30 |
+| Right file in first place | 30/30 |
+| Answerable questions kept by the threshold | 30/30 |
+| Off-topic questions refused before any model call | 10/10 |
+| Off-topic questions refused by the model alone, threshold switched off | 10/10 |
+| Answers containing the key fact, keyword check | 27/30 |
+| Answers supported by the docs, every draft read by hand | 30/30 |
+| Retrieval time per question, embedding call included | median 0.46 s, max 0.99 s |
+| Drafting time per question | median 0.53 s, max 1.40 s |
 
-## Architecture
+The three keyword misses are correct paraphrases, for example "Slack's 3-second reply timeout" where the check looked for "3 seconds". Every draft is in [evaluation/results/drafts.md](evaluation/results/drafts.md), and the full tables are in [evaluation/results/summary.md](evaluation/results/summary.md).
 
-```
-Slack event (question posted)
-        │
-        ▼
-  ┌─────────────┐
-  │  retrieve   │  vector search over knowledge_base/ (DuckDB VSS or Chroma)
-  └─────┬───────┘
-        ▼
-  ┌─────────────┐
-  │    draft    │  LLM drafts an answer + cites sources + confidence score
-  └─────┬───────┘
-        ▼
-  ┌─────────────┐
-  │ human_gate  │  LangGraph interrupt_before — posted to team-only thread,
-  │             │  Approve / Edit / Reject via Slack Block Kit buttons
-  └─────┬───────┘
-        ▼
-  ┌─────────────┐
-  │    post     │  approved answer goes to the public channel
-  └─────┬───────┘
-        ▼
-  ┌─────────────┐
-  │    log      │  exchange appended to knowledge_base/ for future retrieval
-  └─────────────┘
-```
+**How the threshold was chosen.** The off-topic questions scored at most 0.28 against the knowledge base, and the answerable ones at least 0.39, the lowest being a French question against English docs. The default threshold, 0.33, sits in the middle of that gap. The summary shows the result of every candidate threshold from 0.20 to 0.60.
 
-Same orchestration pattern as `ai-data-agent` (LangGraph, persistent checkpointed state, a real interrupt rather than a fake confirmation dialog), pointed at a live external system instead of an internal one.
+**What it does not show.** The questions were written with the docs in view, so they are easier than real ones, and the knowledge base is small: five files, 39 passages. The model's answers vary a little from one run to the next. The next step is a two-week pilot with a small team, on their public documentation and with their written agreement.
+
+**What it changed in the code.** The first drafts contained non-breaking hyphens and narrow no-break spaces, for example inside the model name gpt-oss-120b. They look normal but break a command or a model name copied from the answer, so the bot now replaces them with plain characters.
+
+## How the awkward cases are handled
+
+| Case | What the bot does |
+|---|---|
+| The knowledge base does not cover the question | Passages below the threshold are dropped. With none left, the draft is a fixed refusal and the model is not called. When the model gets passages that do not cover the question, it replies with a `NO_ANSWER` marker, turned into the same refusal. |
+| Slack sends the same event twice, which happens while the free instance wakes up | Runs are keyed by channel and message timestamp. A second delivery of a message already in progress or already drafted is skipped, so one question gives one review message. |
+| Two reviewers click at the same time, or one reviewer clicks twice | The decision is recorded once, under a lock. Later clicks change nothing and get a private note. |
+| The model provider is down, over quota or has retired the model | `SUPPORT_COPILOT_LLM_FALLBACKS` lists backup models tried in order. If every model fails, the review channel is told that no draft could be produced, with the question. |
+| The service restarts while a question waits for review | The free plan has no persistent disk, so the paused run is lost. A click on it gets a private note asking the reviewer to answer by hand. |
+| Someone edits a message or replies inside a thread | Ignored: only new top-level messages are questions. |
+
+## Status, 30 September 2026
+
+- The code, the 45 tests and the evaluation run locally, and the tests run in CI on every push.
+- The Render service at https://fde-support-copilot.onrender.com/ answers its health check. After a sleep, the first request took 80 seconds.
+- The Slack app is installed in a personal test workspace. Next steps: connect it to the Render service (environment variables on Render, Request URLs in the Slack app), then record a full run: question, draft, edit, approval and answer in the thread. Until then, the Slack loop is covered by tests that mock Slack, including two runs through the real graph and checkpoint.
+- No company or customer uses the bot.
 
 ## Stack
 
-- **Orchestration:** LangGraph (persistent state, `interrupt_before` for the human gate)
-- **Slack integration:** `slack-bolt` (Socket Mode for local dev, switchable to HTTP + signed requests for the cloud deployment)
-- **Retrieval:** DuckDB (reusing the same engine as `ai-data-agent`) with a vector-search extension, or Chroma if DuckDB VSS proves too limited for embeddings at this scale
-- **LLM:** LiteLLM (same multi-provider fallback pattern as the other two projects — one provider down doesn't take the agent down)
-- **Deployment:** Docker on Render's free-tier Web Service — HTTP mode (Flask + gunicorn, `SLACK_MODE=http`) rather than Socket Mode, since Render's free tier is Web Services only (Background Workers, the natural fit for Socket Mode, start at $7/mo)
-- **Tests:** pytest, targeting the same rigor bar as the other two projects (agent nodes tested in isolation, Slack event parsing tested without hitting the real API)
+- **LangGraph** for the steps, the pause and the SQLite checkpoint
+- **Slack Bolt for Python**: Socket Mode for local development, HTTP mode with Flask and gunicorn on Render
+- **DuckDB** to store the passages and their embeddings, with cosine similarity computed in NumPy. A full scan is enough for a few thousand passages, so there is no separate vector database.
+- **LiteLLM** for the embedding and drafting calls, with a list of backup models
+- **Docker**, on Render's free Web Service plan. Background workers, the natural fit for Socket Mode, start at 7 dollars a month.
+- **pytest**, pytest-mock and GitHub Actions
 
-## Status
+## Tests
 
-Implemented and tested (26 tests, 93% coverage on `agent/` and `knowledge_base/`). Retrieval uses cosine similarity over DuckDB-stored embeddings computed through LiteLLM (`mistral/mistral-embed` by default), so no dedicated vector-database service or extra ML dependency is needed in the container. The draft node explicitly refuses to answer when nothing relevant was retrieved, rather than letting the LLM guess. The Slack review flow (Approve / Edit-then-resume / Reject) is fully wired through LangGraph's `interrupt_before` + `update_state`/`invoke(None, ...)` resume pattern, over either Socket Mode (local dev) or HTTP mode (`SLACK_MODE=http`, for the Render deployment — Render's free tier is Web Services only, which need a public port; Background Workers, the natural fit for Socket Mode, start at $7/mo).
+45 tests, 89% line coverage of `agent/`, `knowledge_base/` and `slack_app.py`. Slack, the models and the embedding API are replaced by test doubles, so the tests need no API key. They cover each agent step, the threshold, the backup models, the refusal marker, ingestion and search, the Slack handlers, the duplicate-event and double-click guards, and two runs through the real LangGraph graph with its SQLite checkpoint: one approved, one rejected.
 
-A Slack app exists (manifest at `slack-app-manifest.yml`, imported via api.slack.com/apps), installed to a personal test workspace with Socket Mode + an app-level token generated. The Render Web Service is live at `https://fde-support-copilot.onrender.com/` (health check returns `ok`; free-tier cold start after inactivity, ~20-30s to wake up). A starter knowledge base (`docs/`) documents the project itself — the agent answers questions about its own approval flow, architecture, and testing, which keeps the live demo self-contained and easy to verify without a fabricated customer. Since Render's free tier has no persistent disk, the container re-ingests `docs/` into `kb.duckdb` on every cold boot if the DB isn't already there (see the Dockerfile `CMD`) — confirmed locally: 36 chunks indexed, retrieval returns the right passage for a handful of test queries. **Not done yet:** setting `OPENROUTER_API_KEY` (or another embedding-capable provider key) and `EMBEDDING_MODEL` as environment variables on the Render service itself, and pointing the Slack app's Event Subscriptions / Interactivity Request URL at `https://fde-support-copilot.onrender.com/slack/events` in api.slack.com/apps — see `.env.example` for every secret the deployment needs, none of which are committed here on purpose.
+```bash
+pytest
+```
 
 ## Project layout
 
 ```
 fde-support-copilot/
 ├── agent/
-│   ├── graph.py          # LangGraph state machine: retrieve → draft → human_gate → post → log
-│   ├── nodes.py          # individual node implementations
-│   └── state.py          # the shared agent state (Pydantic model)
+│   ├── graph.py          # retrieve → draft → human_gate → post → log, paused before human_gate
+│   ├── nodes.py          # the steps: threshold, drafting with backup models, refusal marker
+│   └── state.py          # the shared state (Pydantic model)
 ├── knowledge_base/
-│   ├── db.py             # shared DuckDB connection + LiteLLM embedding helper
-│   ├── ingest.py         # chunks docs/tickets and loads them into the vector store
-│   └── retriever.py      # cosine-similarity search used by the retrieve node
-├── slack_app.py          # Slack Bolt app: event listeners + Block Kit approve/edit/reject buttons
+│   ├── db.py             # DuckDB connection and LiteLLM embedding helper
+│   ├── ingest.py         # cuts the docs into passages and stores their embeddings
+│   └── retriever.py      # cosine-similarity search used by the retrieve step
+├── docs/                 # the knowledge base: five Markdown files about the bot itself
+├── evaluation/
+│   ├── questions.csv     # 30 answerable and 10 off-topic questions
+│   ├── run_eval.py       # rebuilds the knowledge base and runs every question
+│   └── results/          # summary.md, drafts.md and results.csv of the last run
+├── slack_app.py          # Slack events, review message, Approve / Edit / Reject handlers
 ├── tests/
-│   ├── test_agent_nodes.py
-│   └── test_slack_events.py
+├── slack-app-manifest.yml       # Slack app for local development (Socket Mode)
+├── slack-app-manifest.http.yml  # Slack app for the Render deployment (HTTP mode)
 ├── Dockerfile
-├── docker-compose.yml    # local dev: app + any local vector store service
 ├── .github/workflows/ci.yml
 ├── requirements.txt
 └── .env.example
@@ -102,16 +122,32 @@ fde-support-copilot/
 ## Running locally
 
 ```bash
-cp .env.example .env        # fill in SLACK_BOT_TOKEN, SLACK_APP_TOKEN, an LLM API key
+cp .env.example .env        # Slack tokens, channel IDs, OpenRouter and Groq keys
 pip install -r requirements.txt
-python knowledge_base/ingest.py --source ./docs   # index a starter knowledge base
-python slack_app.py                                # SLACK_MODE=socket (default) — no public URL needed
+python -m knowledge_base.ingest --source ./docs
+python slack_app.py         # Socket Mode by default: no public URL needed
 ```
 
-## Running in HTTP mode (what the Render deployment uses)
+To run the evaluation, with `OPENROUTER_API_KEY` and `GROQ_API_KEY` set:
 
 ```bash
-SLACK_MODE=http gunicorn -b 0.0.0.0:3000 slack_app:flask_app
+python -m evaluation.run_eval
 ```
 
-Needs `SLACK_SIGNING_SECRET` set and a public URL (Render assigns one) pointed at from both **Event Subscriptions** and **Interactivity & Shortcuts** in the Slack app config, request URL `https://<your-service>.onrender.com/slack/events` for both.
+## Deploying on Render
+
+1. Create a Web Service from this repository. Render builds the Dockerfile, and the container rebuilds the knowledge base from `docs/` when it starts.
+2. Set the variables of `.env.example` in the Render dashboard, with `SLACK_MODE=http`. `SLACK_APP_TOKEN` is not needed in HTTP mode.
+3. Wake the service by opening its root URL, then update the Slack app at api.slack.com/apps with `slack-app-manifest.http.yml`. It turns Socket Mode off and sends events and button clicks to `https://fde-support-copilot.onrender.com/slack/events`. Slack checks that URL when you save.
+4. Reinstall the app if Slack asks, and invite the bot to both channels.
+
+## Limits
+
+- On the free plan, the service sleeps after 15 minutes without traffic, the first question after a sleep waits for the start, and pending reviews and newly added answers are lost when it restarts.
+- One workspace and one public inbox channel. A private inbox would need the `groups:history` scope and the `message.groups` event.
+- Follow-up questions posted inside a thread are not picked up.
+- The confidence label measures how close the best passage is to the question, not whether the answer is right.
+
+## Licence
+
+MIT

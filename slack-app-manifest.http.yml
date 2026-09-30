@@ -1,3 +1,6 @@
+# For the Render deployment (SLACK_MODE=http): Socket Mode off, events and
+# button clicks sent to the public Request URL. Wake the service first by
+# opening its root URL, because Slack checks the Request URL when you save.
 display_information:
   name: FDE Support Copilot
   description: Drafts support answers from a knowledge base. A reviewer approves, edits or rejects every draft before anything is posted.
@@ -14,10 +17,12 @@ oauth_config:
       - channels:read
 settings:
   event_subscriptions:
+    request_url: https://fde-support-copilot.onrender.com/slack/events
     bot_events:
       - message.channels
   interactivity:
     is_enabled: true
+    request_url: https://fde-support-copilot.onrender.com/slack/events
   org_deploy_enabled: false
-  socket_mode_enabled: true
+  socket_mode_enabled: false
   token_rotation_enabled: false

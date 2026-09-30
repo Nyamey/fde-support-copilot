@@ -13,4 +13,4 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - run: pytest --cov=agent --cov=knowledge_base --cov-report=term-missing
+      - run: pytest --cov=agent --cov=knowledge_base --cov=slack_app --cov-report=term-missing
