@@ -1,4 +1,6 @@
-"""Unit tests for each agent node, in isolation — no real Slack or LLM calls."""
+"""Unit tests for each agent node, in isolation, with no real Slack or LLM calls."""
+
+import pytest
 
 from agent.state import AgentState, RetrievedPassage
 from agent import nodes
@@ -22,6 +24,66 @@ def test_retrieve_returns_passages(mocker):
     result = nodes.retrieve(make_state())
 
     assert result["passages"] == fake_passages
+
+
+def test_retrieve_drops_passages_below_the_relevance_threshold(mocker):
+    relevant = RetrievedPassage(source="faq.md", text="Click 'Forgot password'.", score=0.62)
+    weak = RetrievedPassage(source="billing.md", text="Invoices are sent monthly.", score=0.21)
+    mocker.patch("agent.nodes.kb_search", return_value=[relevant, weak])
+    mocker.patch.object(nodes, "MIN_RELEVANCE", 0.4)
+
+    result = nodes.retrieve(make_state())
+
+    assert result["passages"] == [relevant]
+
+
+def test_off_topic_question_gets_the_fixed_refusal_without_an_llm_call(mocker):
+    """When every retrieved passage is below the threshold, draft() gets no
+    passages and returns the fixed refusal, so the model is never asked to
+    answer from weak context.
+    """
+    mocker.patch(
+        "agent.nodes.kb_search",
+        return_value=[RetrievedPassage(source="faq.md", text="Click 'Forgot password'.", score=0.12)],
+    )
+    mocker.patch.object(nodes, "MIN_RELEVANCE", 0.4)
+    completion = mocker.patch("agent.nodes.litellm.completion")
+    state = make_state(question="What is the capital of Peru?")
+
+    passages = nodes.retrieve(state)["passages"]
+    result = nodes.draft(state.model_copy(update={"passages": passages}))
+
+    assert result == {"draft_answer": nodes.I_DONT_KNOW_FALLBACK, "confidence": 0.0}
+    completion.assert_not_called()
+
+
+def test_draft_falls_back_to_the_next_model_when_the_first_one_fails(mocker):
+    passages = [RetrievedPassage(source="faq.md", text="Click 'Forgot password'.", score=0.9)]
+    fake_response = {"choices": [{"message": {"content": "Click 'Forgot password'."}}]}
+    completion = mocker.patch(
+        "agent.nodes.litellm.completion", side_effect=[RuntimeError("rate limit reached"), fake_response]
+    )
+    mocker.patch.object(nodes, "LLM_MODEL", "groq/main-model")
+    mocker.patch.object(nodes, "LLM_FALLBACK_MODELS", ["openrouter/backup-model"])
+
+    result = nodes.draft(make_state(passages=passages))
+
+    assert result["draft_answer"] == "Click 'Forgot password'."
+    assert [call.kwargs["model"] for call in completion.call_args_list] == [
+        "groq/main-model",
+        "openrouter/backup-model",
+    ]
+
+
+def test_draft_raises_the_last_error_when_every_model_fails(mocker):
+    passages = [RetrievedPassage(source="faq.md", text="Click 'Forgot password'.", score=0.9)]
+    mocker.patch(
+        "agent.nodes.litellm.completion", side_effect=[RuntimeError("main down"), RuntimeError("backup down")]
+    )
+    mocker.patch.object(nodes, "LLM_FALLBACK_MODELS", ["openrouter/backup-model"])
+
+    with pytest.raises(RuntimeError, match="backup down"):
+        nodes.draft(make_state(passages=passages))
 
 
 def test_draft_says_i_dont_know_when_passages_are_empty(mocker):
@@ -62,6 +124,57 @@ def test_draft_confidence_is_zero_when_llm_says_it_does_not_know(mocker):
     result = nodes.draft(make_state(passages=passages))
 
     assert result["confidence"] == 0.0
+
+
+def test_confidence_is_the_best_passage_score(mocker):
+    passages = [
+        RetrievedPassage(source="faq.md", text="Click 'Forgot password'.", score=0.72),
+        RetrievedPassage(source="billing.md", text="Invoices are sent monthly.", score=0.36),
+    ]
+    fake_response = {"choices": [{"message": {"content": "Click 'Forgot password'."}}]}
+    mocker.patch("agent.nodes.litellm.completion", return_value=fake_response)
+
+    result = nodes.draft(make_state(passages=passages))
+
+    assert result["confidence"] == 0.72
+
+
+def _draft_with_model_reply(mocker, reply: str) -> dict:
+    passages = [RetrievedPassage(source="faq.md", text="Some passage.", score=0.8)]
+    mocker.patch("agent.nodes.litellm.completion", return_value={"choices": [{"message": {"content": reply}}]})
+    return nodes.draft(make_state(passages=passages))
+
+
+def test_no_answer_marker_becomes_the_fixed_refusal(mocker):
+    result = _draft_with_model_reply(mocker, "NO_ANSWER")
+
+    assert result == {"draft_answer": nodes.I_DONT_KNOW_FALLBACK, "confidence": 0.0}
+
+
+def test_refusal_with_a_curly_apostrophe_is_detected(mocker):
+    result = _draft_with_model_reply(mocker, "I don\u2019t have enough information to answer that.")
+
+    assert result["confidence"] == 0.0
+
+
+def test_lookalike_spaces_and_hyphens_are_replaced(mocker):
+    """A command copied from the draft must run as written."""
+    reply = "Run python\u00a0-m knowledge_base.ingest; drafts use gpt\u2011oss\u2011120b within 3\u202fseconds."
+
+    result = _draft_with_model_reply(mocker, reply)
+
+    assert result["draft_answer"] == "Run python -m knowledge_base.ingest; drafts use gpt-oss-120b within 3 seconds."
+
+
+def test_answer_that_explains_the_refusal_rule_is_not_a_refusal(mocker):
+    """Only an answer that opens with a refusal counts as one, so a question
+    about the refusal rule itself can still get a real answer.
+    """
+    reply = "When nothing matches, the bot replies that it doesn't have enough information."
+
+    result = _draft_with_model_reply(mocker, reply)
+
+    assert result == {"draft_answer": reply, "confidence": 0.8}
 
 
 def test_human_gate_approved_uses_the_draft_as_final_answer():

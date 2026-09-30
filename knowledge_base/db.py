@@ -1,7 +1,7 @@
 """Shared DuckDB connection and embedding helpers for ingest.py and retriever.py.
 
 Deliberately reuses LiteLLM for embeddings rather than adding a dedicated
-embeddings dependency (sentence-transformers, etc.) — one less thing to
+embeddings dependency (sentence-transformers, etc.): one less thing to
 install in the Docker image, and it reuses whichever API key is already
 configured for the chat model.
 """
@@ -12,7 +12,7 @@ import duckdb
 import litellm
 
 DUCKDB_PATH = os.getenv("DUCKDB_PATH", "./knowledge_base/kb.duckdb")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "mistral/mistral-embed")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "openrouter/openai/text-embedding-3-small")
 
 
 def get_connection(db_path: str | None = None) -> duckdb.DuckDBPyConnection:
