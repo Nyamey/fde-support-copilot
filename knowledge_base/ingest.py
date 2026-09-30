@@ -1,11 +1,11 @@
 """Loads a knowledge base (docs, past resolved tickets, FAQ) into DuckDB with
 embeddings, so retriever.py can run similarity search against it.
 
-Usage:
-    python knowledge_base/ingest.py --source ./docs
+Usage, from the repository root:
+    python -m knowledge_base.ingest --source ./docs
 
 Reuses the same DuckDB-first approach as ai-data-agent rather than reaching
-for a separate vector-database service — keeps the deployment footprint to
+for a separate vector-database service, which keeps the deployment footprint to
 "one container, no extra managed service" for the free-tier cloud deploy.
 """
 
@@ -35,8 +35,9 @@ def _chunk_text(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list[str]:
 
 def ingest(source_dir: str, db_path: str) -> int:
     """Chunk every .md/.txt document under source_dir, embed each chunk, and
-    upsert into the DuckDB table used by retriever.py. Returns the number of
-    chunks indexed.
+    store it in the DuckDB table used by retriever.py. Running it again on
+    the same files replaces their passages instead of adding duplicates.
+    Returns the number of chunks indexed.
     """
     source_path = Path(source_dir)
     if not source_path.is_dir():
@@ -57,6 +58,10 @@ def ingest(source_dir: str, db_path: str) -> int:
 
     conn = db.get_connection(db_path)
     try:
+        # Answers logged from Slack have "slack-thread:..." sources, so they
+        # are never removed by a re-run.
+        sources = sorted({source for source, _chunk in documents})
+        conn.executemany("DELETE FROM passages WHERE source = ?", [(source,) for source in sources])
         start_id = db.next_id(conn)
         rows = [
             (start_id + i, source, chunk, embedding)

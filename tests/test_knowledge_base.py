@@ -1,7 +1,7 @@
 """Tests for ingest.py chunking and retriever.py similarity search.
 
-Uses a real (temp-file) DuckDB connection — fast and avoids mocking DuckDB's
-SQL layer — but mocks knowledge_base.db.embed so no real LLM call happens.
+Uses a real (temp-file) DuckDB connection, which is fast and avoids mocking DuckDB's
+SQL layer, but mocks knowledge_base.db.embed so no real LLM call happens.
 """
 
 import math
@@ -56,6 +56,31 @@ def test_ingest_on_empty_directory_indexes_nothing(tmp_path, kb_path, mocker):
     embed.assert_not_called()
 
 
+def test_running_ingest_again_replaces_a_files_passages(tmp_path, kb_path, mocker):
+    """A second run must not duplicate the docs, and must keep the answers
+    logged from Slack threads.
+    """
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "faq.md").write_text("First answer.\n\nSecond answer.", encoding="utf-8")
+    mocker.patch.object(db, "embed", side_effect=lambda texts: [[1.0, 0.0] for _ in texts])
+    conn = db.get_connection(kb_path)
+    try:
+        conn.execute("INSERT INTO passages VALUES (1, 'slack-thread:C1:1.1', 'logged answer', ?)", [[0.0, 1.0]])
+    finally:
+        conn.close()
+
+    ingest.ingest(str(docs), kb_path)
+    ingest.ingest(str(docs), kb_path)
+
+    conn = db.get_connection(kb_path)
+    try:
+        sources = [row[0] for row in conn.execute("SELECT source FROM passages ORDER BY id").fetchall()]
+    finally:
+        conn.close()
+    assert sources == ["slack-thread:C1:1.1", "faq.md", "faq.md"]
+
+
 def test_search_ranks_by_cosine_similarity(kb_path, mocker):
     mocker.patch.object(db, "DUCKDB_PATH", kb_path)
 
@@ -92,7 +117,7 @@ def test_search_on_empty_index_returns_nothing(kb_path, mocker):
 
 def test_search_with_a_zero_vector_query_embedding_returns_nothing(kb_path, mocker):
     """A malformed/zero embedding would divide by zero in the cosine-similarity
-    calculation — guarded against explicitly rather than left to crash.
+    calculation, guarded against explicitly rather than left to crash.
     """
     mocker.patch.object(db, "DUCKDB_PATH", kb_path)
     conn = db.get_connection(kb_path)
